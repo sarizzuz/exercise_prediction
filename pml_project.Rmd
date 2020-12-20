@@ -1,0 +1,230 @@
+---
+title: "Practical Machine Learning - Prediction Assignment"
+author: "Farah M"
+date: "13/12/2020"
+output: html_document
+---
+
+## Overview
+
+The goal of the project is to to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did the exercise. This is the "classe" variable in the training set. This report will outline:
+
+1. How the model is built.
+2. How cross validation is used. 
+3. What is the expected out of sample error. 
+4. Rationale for the choices made. 
+
+---
+
+## Load libraries
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(corrplot)
+```
+
+---
+
+## Getting Data
+
+```{r message=FALSE, warning=FALSE}
+
+# URLs for the training and testing data
+training_url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# data directory and files
+data_dir = "./data"
+training_file = "pml-training.csv"
+test_file = "pml-test.csv"
+
+# if directory does not exist, create new
+if (!file.exists(data_dir)) {
+  dir.create(data_dir)
+}
+
+# if files does not exist, download the files
+if (!file.exists(file.path(data_dir, training_file))) {
+  download.file(training_url, destfile=file.path(data_dir, training_file))
+}
+if (!file.exists(file.path(data_dir, test_file))) {
+  download.file(test_url, destfile=file.path(data_dir, test_file))
+}
+
+# load the CSV files as data.frame 
+train <- read_csv(file.path(data_dir, training_file), na=c("", "NA", "NULL", "#DIV/0!"))
+test <- read_csv(file.path(data_dir, test_file), na=c("", "NA", "NULL", "#DIV/0!"))
+dim(train)
+dim(test)
+```
+
+---
+
+## Data pre-processing
+
+In the preprocessing of the data, we will:
+
+* Remove predictors containg missing values.
+* Remove "zero- and near zero- variance predictors".
+* Remove columns that will not be useful for the model.
+
+
+```{r}
+# remove predictors with NA and missing values
+cleanTrain <- train %>%
+  select(which(colMeans(is.na(.)) == 0))
+
+# remove "zero- and near zero- variance predictors" 
+cleanTrain <- cleanTrain %>%
+  select(-nearZeroVar(cleanTrain))
+
+# remove the columns that will not be useful, such as user_name and timestamps
+cleanTrain <- cleanTrain[, -(1:5)]
+dim(cleanTrain)
+```
+
+After the preprocessing, we're left with 48 predictors (exclude "classe" and index  columns) for our model training.
+
+---
+
+## Data Splitting
+We will split the training set into a training set and a validation set, in order for us to estimate the out-of-sample error.
+
+```{r message=FALSE, warning=FALSE}
+# split data to create trainset and testset
+set.seed(2468)
+
+inTrain  <- createDataPartition(cleanTrain$classe, p=0.8, list=FALSE)
+
+trainSet <- cleanTrain[inTrain,]
+validationSet <- cleanTrain[-inTrain,]
+dim(trainSet)
+dim(validationSet)
+```
+
+---
+
+## Data Exploration
+After removing the prdeictors that we'll not be using, we can have a look at the correlation between the remaining predictors before moving on to deciding on the models.
+
+```{r}
+corrMatrix <- cor(trainSet[, -54])
+corrplot(corrMatrix,  order = "FPC", method = "circle", type = "upper", tl.cex = 0.6, tl.col ="black", tl.srt = 45)
+```
+
+
+We can observe that the data set is largely uncorrelated. The higher the number (denoted by the  blue color), the higher the correlation.
+
+---
+
+## Model Training
+The models that we will try are:
+
+* Random Forest
+* eXtreme Gradient Boosting
+
+Both models are known to be quite accurate and are widely used methods for prediction. Another plus is that the correlations observed above will not adversely affect the effectiveness of the model. 
+  
+Before training the models, we'll configure parallel processing to speed up the process.
+```{r message=FALSE, warning=FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1, setup_strategy="sequential") # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+  
+### 1. Random Forest
+Here we will do a 5-fold cross validation resampling and let the model run up to 500 trees.
+
+```{r}
+# model fit
+rfControl <- trainControl(method="cv", number=5, allowParallel = TRUE)
+
+set.seed(2468)
+rfModel <- train(classe~., data=trainSet, method="rf", trControl=rfControl)
+rfModel$finalModel
+
+```
+
+
+```{r}
+# prediction
+rfPredict <- predict(rfModel, newdata=validationSet)
+rfConfMatrix <- confusionMatrix(rfPredict, as.factor(validationSet$classe))
+rfConfMatrix
+
+```
+
+The Random Forest method performed very well, and has low out-of-sample errors.
+
+
+### 2. eXtreme Gradient Boosting
+Again, we will do a 5-fold cross validation resampling.
+```{r}
+# model fit
+xgbControl <- trainControl(method="cv", number=5, allowParallel = TRUE)
+
+set.seed(2468)
+xgbModel <- train(classe~., data=trainSet, method="xgbTree", trControl=xgbControl)
+xgbModel
+```
+
+```{r}
+# prediction
+xgbPredict <- predict(xgbModel, newdata=validationSet)
+xgbConfMatrix <- confusionMatrix(xgbPredict, as.factor(validationSet$classe))
+xgbConfMatrix
+```
+
+The XGB model also performed very well.
+
+
+De-register the parallel processing cluster
+```{r}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+---
+
+## Comparing the models
+```{r}
+# collect resamples
+modelResults <- resamples(list(RF=rfModel, XGB=xgbModel))
+
+# summarize the distributions
+summary(modelResults)
+
+# dot plots of results
+dotplot(modelResults)
+```
+
+
+From the summary, we observe that both models performed similarly well. The XGB model performed marginally better than the Random Forest model. 
+
+---
+
+## Model Results on Test Data
+Next we run both model on the test data.
+
+```{r}
+testPrediction <- predict(rfModel, test)
+testPrediction
+
+testPrediction <- predict(xgbModel, test)
+testPrediction
+```
+
+Note that both models produce the same prediction outcomes.
+
+
+
+
+
+
+
+
