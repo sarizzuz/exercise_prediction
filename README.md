@@ -8,3 +8,5 @@ The goal of the project is to to use data from accelerometers on the belt, forea
 2. How cross validation is used. 
 3. What is the expected out of sample error. 
 4. Rationale for the choices made. 
+
+The report can be accessed at: https://sarizzuz.github.io/pml_project/pml_project.html
